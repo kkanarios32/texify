@@ -1,74 +1,104 @@
 import argparse
-import os.path
+import subprocess
 
 from texify.inference import batch_inference
 from texify.model.model import load_model
 from texify.model.processor import load_processor
-from PIL import Image
+from PIL import ImageGrab
 
 from texify.output import replace_katex_invalid
-from texify.settings import settings
-from texify.util import is_valid_image
-import json
+import threading
+from typing import Optional
+from queue import Queue
 
 
-def inference_single_image(image_path, json_path, model, processor, katex_compatible=False):
-    image = Image.open(image_path)
-    text = batch_inference([image], model, processor)
+class ModelLoader:
+    def __init__(self):
+        self.model = None
+        self.processor = None
+        self._loading_thread: Optional[threading.Thread] = None
+        self._loading_complete = threading.Event()
+        self._error_queue = Queue()
+
+    def start_loading(self):
+        """Start loading the model in a separate thread."""
+        self._loading_thread = threading.Thread(
+            target=self._load_model_and_processor)
+        self._loading_thread.start()
+
+    def _load_model_and_processor(self):
+        """Internal method to load model and processor."""
+        try:
+            self.model = load_model()
+            self.processor = load_processor()
+            self._loading_complete.set()
+        except Exception as e:
+            self._error_queue.put(e)
+            self._loading_complete.set()
+
+    def wait_for_loading(self, timeout: Optional[float] = None) -> bool:
+        completed = self._loading_complete.wait(timeout)
+        if not completed:
+            return False
+        # Check if there were any errors during loading
+        if not self._error_queue.empty():
+            error = self._error_queue.get()
+            raise RuntimeError(f"Model loading failed: {
+                               str(error)}") from error
+        return True
+
+    def is_loaded(self) -> bool:
+        """Check if model is loaded."""
+        return self._loading_complete.is_set() and self._error_queue.empty()
+
+
+def inference_single_image(model_loader, katex_compatible=False):
+    # Capture image
+    subprocess.run(["flameshot", "gui"])
+    image = ImageGrab.grabclipboard()
+
+    if image is None:
+        raise RuntimeError("Failed to capture image from clipboard")
+
+    # Wait for model to be loaded
+    if not model_loader.wait_for_loading():
+        raise RuntimeError("Model loading timeout")
+
+    # Perform inference
+    text = batch_inference(
+        [image],
+        model_loader.model,
+        model_loader.processor
+    )
     if katex_compatible:
         text = [replace_katex_invalid(t) for t in text]
-    write_data = [{"image_path": image_path, "text": text[0]}]
-    with open(json_path, "w+") as f:
-        json_repr = json.dumps(write_data, indent=4)
-        f.write(json_repr)
-
-
-def inference_image_dir(image_dir, json_path, model, processor, max=None, katex_compatible=False):
-    image_paths = [os.path.join(image_dir, image_name) for image_name in os.listdir(image_dir)]
-    image_paths = [ip for ip in image_paths if is_valid_image(ip)]
-    if max:
-        image_paths = image_paths[:max]
-
-    write_data = []
-    for i in range(0, len(image_paths), settings.BATCH_SIZE):
-        batch = image_paths[i:i+settings.BATCH_SIZE]
-        images = [Image.open(image_path) for image_path in batch]
-        text = batch_inference(images, model, processor)
-        for image_path, t in zip(batch, text):
-            if katex_compatible:
-                t = replace_katex_invalid(t)
-            write_data.append({"image_path": image_path, "text": t})
-
-    with open(json_path, "w+") as f:
-        json_repr = json.dumps(write_data, indent=4)
-        f.write(json_repr)
+    # Try using xclip (most common method)
+    process = subprocess.Popen(
+        ['xclip', '-selection', 'clipboard'], stdin=subprocess.PIPE)
+    process.communicate(text[0].encode('utf-8'))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OCR an image of a LaTeX equation.")
-    parser.add_argument("image", type=str, help="Path to image or folder of images to OCR.")
-    parser.add_argument("--max", type=int, help="Maximum number of images to OCR if a folder is passes.", default=None)
-    parser.add_argument("--json_path", type=str, help="Path to JSON file to save results to.", default=os.path.join(settings.DATA_DIR, "results.json"))
-    parser.add_argument("--katex_compatible", action="store_true", help="Make output KaTeX compatible.", default=False)
+    parser = argparse.ArgumentParser(
+        description="OCR an image of a LaTeX equation.")
+    parser.add_argument("--katex_compatible", action="store_true",
+                        help="Make output KaTeX compatible.", default=False)
     args = parser.parse_args()
 
-    image_path = args.image
-    model = load_model()
-    processor = load_processor()
+    # Create model loader
+    loader = ModelLoader()
 
-    json_path = os.path.abspath(args.json_path)
-    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    # Start loading model in background
+    loader.start_loading()
 
-    if os.path.isfile(image_path):
-        inference_single_image(image_path, json_path, model, processor, args.katex_compatible)
-    else:
-        inference_image_dir(image_path, json_path, model, processor, args.max, args.katex_compatible)
+    try:
+        # Capture and process image
+        # This will wait for model loading if necessary
+        inference_single_image(loader, args.katex_compatible)
 
-    print(f"Wrote results to {json_path}")
+    except Exception as e:
+        print(f"Error: {str(e)}")
 
 
 if __name__ == "__main__":
     main()
-
-
-
