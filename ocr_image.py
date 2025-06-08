@@ -22,8 +22,7 @@ class ModelLoader:
 
     def start_loading(self):
         """Start loading the model in a separate thread."""
-        self._loading_thread = threading.Thread(
-            target=self._load_model_and_processor)
+        self._loading_thread = threading.Thread(target=self._load_model_and_processor)
         self._loading_thread.start()
 
     def _load_model_and_processor(self):
@@ -43,8 +42,7 @@ class ModelLoader:
         # Check if there were any errors during loading
         if not self._error_queue.empty():
             error = self._error_queue.get()
-            raise RuntimeError(f"Model loading failed: {
-                               str(error)}") from error
+            raise RuntimeError(f"Model loading failed: {str(error)}") from error
         return True
 
     def is_loaded(self) -> bool:
@@ -54,7 +52,7 @@ class ModelLoader:
 
 def inference_single_image(model_loader, katex_compatible=False):
     # Capture image
-    subprocess.run(["flameshot", "gui"])
+    subprocess.run(["xscreenshot", "-m", "selection", "-c", "-s"])
     image = ImageGrab.grabclipboard()
 
     if image is None:
@@ -65,24 +63,24 @@ def inference_single_image(model_loader, katex_compatible=False):
         raise RuntimeError("Model loading timeout")
 
     # Perform inference
-    text = batch_inference(
-        [image],
-        model_loader.model,
-        model_loader.processor
-    )
+    text = batch_inference([image], model_loader.model, model_loader.processor)
     if katex_compatible:
         text = [replace_katex_invalid(t) for t in text]
     # Try using xclip (most common method)
     process = subprocess.Popen(
-        ['xclip', '-selection', 'clipboard'], stdin=subprocess.PIPE)
-    process.communicate(text[0].encode('utf-8'))
+        ["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE
+    )
+    process.communicate(text[0].encode("utf-8"))
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="OCR an image of a LaTeX equation.")
-    parser.add_argument("--katex_compatible", action="store_true",
-                        help="Make output KaTeX compatible.", default=False)
+    parser = argparse.ArgumentParser(description="OCR an image of a LaTeX equation.")
+    parser.add_argument(
+        "--katex_compatible",
+        action="store_true",
+        help="Make output KaTeX compatible.",
+        default=False,
+    )
     args = parser.parse_args()
 
     # Create model loader
